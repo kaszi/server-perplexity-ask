@@ -2,6 +2,8 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -117,10 +119,27 @@ const PERPLEXITY_REASON_TOOL: Tool = {
   },
 };
 
-// Retrieve the Perplexity API key from environment variables
+// Retrieve environment variables
 const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY;
+const TRANSPORT_MODE = process.env.PERPLEXITY_TRANSPORT || "stdio";
+const HTTP_HOST = process.env.PERPLEXITY_HOST || "localhost";
+const portStr = process.env.PERPLEXITY_PORT || "3000";
+const HTTP_PORT = parseInt(portStr, 10);
+
 if (!PERPLEXITY_API_KEY) {
   console.error("Error: PERPLEXITY_API_KEY environment variable is required");
+  process.exit(1);
+}
+
+if (TRANSPORT_MODE !== "stdio" && TRANSPORT_MODE !== "http") {
+  console.error(`Error: PERPLEXITY_TRANSPORT must be either 'stdio' or 'http', but got '${TRANSPORT_MODE}'`);
+  console.error("Valid options: 'stdio' (default), 'http'");
+  console.error("Example: PERPLEXITY_TRANSPORT=http");
+  process.exit(1);
+}
+
+if (TRANSPORT_MODE === "http" && Number.isNaN(HTTP_PORT)) {
+  console.error(`Error: Invalid PERPLEXITY_PORT: '${portStr}'. Must be a valid number.`);
   process.exit(1);
 }
 
@@ -289,14 +308,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 /**
- * Initializes and runs the server using standard I/O for communication.
- * Logs an error and exits if the server fails to start.
+ * Initializes and runs the server using the configured transport.
+ * Supports both stdio and HTTP transports based on environment variables.
  */
 async function runServer() {
   try {
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Perplexity MCP Server running on stdio with Ask, Research, and Reason tools");
+    if (TRANSPORT_MODE === "http") {
+      // HTTP transport using StreamableHTTPServerTransport
+      const app = express();
+      app.use(express.json());
+
+      // Create a single reused transport instance for all requests
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // Stateless mode
+      });
+      await server.connect(transport);
+
+      app.post('/mcp', async (req, res) => {
+        try {
+          await transport.handleRequest(req, res, req.body);
+        } catch (error) {
+          console.error('Error handling MCP request:', error);
+          if (!res.headersSent) {
+            const id = req.body?.id ?? null;
+            res.status(500).json({
+              jsonrpc: '2.0',
+              error: {
+                code: -32603,
+                message: "Internal server error",
+              },
+              id,
+            });
+          }
+        }
+      });
+
+      app.listen(HTTP_PORT, HTTP_HOST, () => {
+        console.error(`Perplexity MCP Server running on http://${HTTP_HOST}:${HTTP_PORT}/mcp with Ask, Research, and Reason tools`);
+      });
+    } else {
+      // Stdio transport (default)
+      const transport = new StdioServerTransport();
+      await server.connect(transport);
+      console.error("Perplexity MCP Server running on stdio with Ask, Research, and Reason tools");
+    }
   } catch (error) {
     console.error("Fatal error running server:", error);
     process.exit(1);
