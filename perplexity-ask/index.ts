@@ -343,7 +343,14 @@ async function runServer() {
         }
       });
 
-      app.listen(HTTP_PORT, HTTP_HOST, () => {
+      const httpServer = app.listen(HTTP_PORT, HTTP_HOST);
+
+      httpServer.on('error', (error) => {
+        console.error('Server failed to start:', error);
+        process.exit(1);
+      });
+
+      httpServer.on('listening', () => {
         console.error(`Perplexity MCP Server running on http://${HTTP_HOST}:${HTTP_PORT}/mcp with Ask, Research, and Reason tools`);
       });
     } else {
